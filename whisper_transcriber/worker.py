@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Callable
 
 from whisper_transcriber.config import Settings, load_settings
+from whisper_transcriber.artifacts import prune_artifacts
 from whisper_transcriber.errors import PipelineError
 from whisper_transcriber.job_store import JobStore
 from whisper_transcriber.media import MediaPipeline
@@ -19,6 +20,7 @@ def process_one_job(
     heartbeat_timeout_seconds: float,
     artifacts_root: str | Path,
     media: MediaPipeline | None = None,
+    settings: Settings | None = None,
 ) -> bool:
     claimed_job = store.claim_next_job(
         worker_id=worker_id,
@@ -60,6 +62,12 @@ def process_one_job(
         artifact_dir=str(result.artifact_dir),
         display_title=result.display_title,
     )
+    if settings is not None:
+        prune_artifacts(
+            artifacts_root=artifacts_root,
+            max_age_hours=settings.max_artifact_age_hours,
+            max_count=settings.max_artifacts,
+        )
     return True
 
 
@@ -86,6 +94,7 @@ def main(
                 heartbeat_timeout_seconds=lease_timeout_seconds,
                 artifacts_root=resolved_settings.artifacts_dir,
                 media=media,
+                settings=resolved_settings,
             )
             if processed:
                 continue

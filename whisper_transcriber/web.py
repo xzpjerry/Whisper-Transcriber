@@ -14,6 +14,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from whisper_transcriber.artifacts import prune_artifacts
 from whisper_transcriber.config import Settings, load_settings
 from whisper_transcriber.db import connect_db
 from whisper_transcriber.job_store import JobRecord, JobStore
@@ -236,6 +237,11 @@ def create_app(
         if errors:
             bullet_list = "\n".join(f"- {item}" for item in errors)
             raise RuntimeError(f"Startup checks failed:\n{bullet_list}")
+        prune_artifacts(
+            artifacts_root=resolved_settings.artifacts_dir,
+            max_age_hours=resolved_settings.max_artifact_age_hours,
+            max_count=resolved_settings.max_artifacts,
+        )
         yield
 
     app = FastAPI(title="Whisper Transcriber", lifespan=lifespan)

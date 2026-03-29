@@ -207,3 +207,63 @@ def test_healthz_returns_structured_checks_payload(tmp_path, monkeypatch):
     assert payload["checks"]["ffmpeg"]["ok"] is True
     assert payload["checks"]["model"]["ok"] is True
     assert payload["checks"]["artifacts"]["ok"] is True
+
+
+def test_web_startup_prunes_artifacts_after_environment_checks(tmp_path, monkeypatch):
+    web_module = _load_web_module()
+    settings = _make_settings(tmp_path)
+    store = JobStore(settings.db_path)
+    call_order: list[str] = []
+
+    def fake_checks():
+        call_order.append("checks")
+        return (
+            {
+                "ffmpeg": {"ok": True, "detail": "/usr/bin/ffmpeg"},
+                "model": {"ok": True, "detail": "/models/whisper"},
+                "artifacts": {"ok": True, "detail": str(settings.artifacts_dir)},
+            },
+            [],
+        )
+
+    def fake_prune_artifacts(
+        *,
+        artifacts_root,
+        max_age_hours,
+        max_count,
+        now=None,
+    ):
+        call_order.append("cleanup")
+        assert artifacts_root == settings.artifacts_dir
+        assert max_age_hours == settings.max_artifact_age_hours
+        assert max_count == settings.max_artifacts
+        return []
+
+    monkeypatch.setattr(web_module, "_run_environment_checks", fake_checks)
+    monkeypatch.setattr(web_module, "prune_artifacts", fake_prune_artifacts)
+
+    app = web_module.create_app(settings=settings, store=store)
+
+    with TestClient(app):
+        pass
+
+    assert call_order == ["checks", "cleanup"]
+
+
+def test_queue_limit_rejects_new_submissions_with_friendly_429(tmp_path, monkeypatch):
+    client, store, settings = _make_client(tmp_path, monkeypatch)
+    for index in range(settings.max_queue_depth):
+        store.create_job(
+            youtube_url=f"https://www.youtube.com/watch?v=queued-{index}",
+            display_title=f"Queued {index}",
+            language_hint=None,
+        )
+
+    response = client.post(
+        "/api/transcribe",
+        json={"youtube_url": "https://www.youtube.com/watch?v=overflow"},
+    )
+
+    assert response.status_code == 429
+    payload = response.json()
+    assert payload["detail"] == "The transcription queue is full. Please try again later."

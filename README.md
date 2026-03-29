@@ -1,0 +1,95 @@
+# Whisper Transcriber
+
+Internal FastAPI app for transcribing YouTube audio with `mlx-whisper`. The web process accepts jobs and shows status pages. A separate worker process claims queued jobs, runs the pipeline, and writes per-job artifacts.
+
+## Prerequisites
+
+- Python 3.11+
+- `ffmpeg` installed and available on `PATH`
+- Access to the configured Whisper model path or Hugging Face repo id
+
+Install runtime dependencies:
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+Install development/test dependencies:
+
+```bash
+python -m pip install -r requirements-dev.txt
+```
+
+## Running
+
+Start the web app:
+
+```bash
+python app.py
+```
+
+Start the worker in a second terminal or service:
+
+```bash
+python worker.py
+```
+
+The app and worker should point at the same SQLite database and artifacts directory.
+
+## Environment Variables
+
+Defaults are shown in parentheses.
+
+- `ARTIFACTS_DIR` (`./artifacts`): root directory for per-job artifact folders.
+- `DB_PATH` (`./data/transcriber.sqlite3`): SQLite database file.
+- `MLX_WHISPER_MODEL` (`~/.lmstudio/models/mlx-community/whisper-large-v3-turbo`): model path or Hugging Face repo id.
+- `MAX_QUEUE_DEPTH` (`5`): maximum queued + running jobs accepted by the web app.
+- `MAX_ARTIFACT_AGE_HOURS` (`168`): artifact retention window in hours.
+- `MAX_ARTIFACTS` (`100`): maximum number of job artifact directories to keep.
+- `WORKER_POLL_SECONDS` (`2`): idle worker sleep interval.
+- `WORKER_HEARTBEAT_SECONDS` (`5`): worker heartbeat interval.
+- `HEARTBEAT_SECONDS` (`5`): legacy fallback for worker heartbeat configuration.
+
+## Directory Layout
+
+- `data/` stores the SQLite database and other local state.
+- `artifacts/<job_id>/` stores one job's output.
+- Each job directory may include:
+  - `audio.mp3`
+  - `transcript.txt`
+  - `subtitles.srt`
+  - `subtitles.vtt`
+  - `segments.json`
+
+Artifact cleanup runs on web startup and after a successful worker completion. It is bounded by both age and count, so old job folders are pruned automatically.
+
+## Health Check
+
+`GET /healthz` returns the current environment check status. It validates:
+
+- `ffmpeg` availability
+- Whisper model resolution
+- artifact directory writability
+
+If it returns `503`, check the `detail` values in the JSON response and fix the failing dependency or path.
+
+## Troubleshooting
+
+- `429 Too Many Requests`: the queue is full. Wait for existing jobs to finish or raise `MAX_QUEUE_DEPTH`.
+- `503` from `/healthz`: `ffmpeg`, the model path, or the artifacts directory is misconfigured.
+- Model not found: verify `MLX_WHISPER_MODEL` points to a local model directory or a valid Hugging Face repo id.
+- Artifact cleanup not happening: confirm both the web app and worker can write to `ARTIFACTS_DIR`.
+- Job stays queued: the worker is not running, or it cannot claim jobs from the database.
+
+## Deployment
+
+Run the app and worker behind VPN access and reverse-proxy basic auth. This service is intended for a small trusted internal group, not public internet exposure.
+
+Typical deployment shape:
+
+1. Web app behind a reverse proxy.
+2. Basic auth or equivalent access control at the proxy.
+3. Worker process on the same host with the same `DB_PATH` and `ARTIFACTS_DIR`.
+4. Persistent storage for `data/` and `artifacts/`.
+
+The app exposes durable job pages and shared job history, so do not publish it directly to the internet without an access-control layer.

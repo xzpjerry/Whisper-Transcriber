@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import shutil
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -45,3 +47,50 @@ def write_job_outputs(
         encoding="utf-8",
     )
     return artifacts
+
+
+def prune_artifacts(
+    *,
+    artifacts_root: str | Path,
+    max_age_hours: int,
+    max_count: int,
+    now: datetime | None = None,
+) -> list[str]:
+    reference_now = now or datetime.now(timezone.utc)
+    if reference_now.tzinfo is None:
+        reference_now = reference_now.replace(tzinfo=timezone.utc)
+
+    root = Path(artifacts_root)
+    if not root.exists():
+        return []
+
+    cutoff = reference_now - timedelta(hours=max(0, max_age_hours))
+    candidates: list[tuple[Path, datetime]] = []
+    for entry in root.iterdir():
+        if not entry.is_dir():
+            continue
+        try:
+            stat = entry.stat()
+        except OSError:
+            continue
+        candidates.append(
+            (
+                entry,
+                datetime.fromtimestamp(stat.st_mtime, tz=reference_now.tzinfo),
+            )
+        )
+
+    expired = [item for item in candidates if item[1] < cutoff]
+    remaining = [item for item in candidates if item[1] >= cutoff]
+    remaining.sort(key=lambda item: (item[1], item[0].name))
+
+    excess = max(0, len(remaining) - max(0, max_count))
+    expired.extend(remaining[:excess])
+    expired.sort(key=lambda item: (item[1], item[0].name))
+
+    removed: list[str] = []
+    for entry, _mtime in expired:
+        shutil.rmtree(entry, ignore_errors=True)
+        if not entry.exists():
+            removed.append(entry.name)
+    return removed

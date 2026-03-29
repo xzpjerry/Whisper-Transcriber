@@ -112,6 +112,7 @@ def test_process_one_job_completes_claimed_job_and_emits_heartbeats(tmp_path):
 
     recording_store = RecordingStore(store)
     calls: list[dict[str, object]] = []
+    cleanup_calls: list[tuple[Path, int, int]] = []
 
     def fake_run_job(
         *,
@@ -139,17 +140,34 @@ def test_process_one_job_completes_claimed_job_and_emits_heartbeats(tmp_path):
             display_title="Recovered Title",
         )
 
+    def fake_prune_artifacts(
+        *,
+        artifacts_root: str | Path,
+        max_age_hours: int,
+        max_count: int,
+        now=None,
+    ):
+        cleanup_calls.append((Path(artifacts_root), max_age_hours, max_count))
+        return []
+
     original_run_job = worker_module.run_job
+    original_prune_artifacts = worker_module.prune_artifacts
     worker_module.run_job = fake_run_job
+    worker_module.prune_artifacts = fake_prune_artifacts
     try:
         processed = worker_module.process_one_job(
             store=recording_store,
             worker_id="worker-1",
             heartbeat_timeout_seconds=30,
             artifacts_root=tmp_path / "artifacts",
+            settings=SimpleNamespace(
+                max_artifact_age_hours=168,
+                max_artifacts=100,
+            ),
         )
     finally:
         worker_module.run_job = original_run_job
+        worker_module.prune_artifacts = original_prune_artifacts
 
     refreshed = store.get_job(created.job_id)
 
@@ -189,6 +207,7 @@ def test_process_one_job_completes_claimed_job_and_emits_heartbeats(tmp_path):
             "Completed",
         )
     ]
+    assert cleanup_calls == [(tmp_path / "artifacts", 168, 100)]
     assert recording_store.failed == []
     assert refreshed is not None
     assert refreshed.status == "completed"
@@ -390,6 +409,7 @@ def test_main_requeues_stale_jobs_on_startup_and_sleeps_when_idle(tmp_path):
         heartbeat_timeout_seconds: float,
         artifacts_root: Path,
         media=None,
+        settings=None,
     ):
         process_calls.append((worker_id, heartbeat_timeout_seconds, Path(artifacts_root)))
         return False
