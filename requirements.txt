@@ -5,5 +5,5 @@ ffmpeg-python==0.2.0
 python-multipart==0.0.9
 jinja2
 mlx-whisper
-yt-dlp
-yt-dlp-ejs
+yt-dlp[default]>=2026.10.21
+yt-dlp-ejs>=0.8.0

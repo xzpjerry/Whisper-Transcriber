@@ -18,6 +18,7 @@ from whisper_transcriber.artifacts import prune_artifacts
 from whisper_transcriber.config import Settings, load_settings
 from whisper_transcriber.db import connect_db
 from whisper_transcriber.job_store import JobRecord, JobStore
+from whisper_transcriber.media import JS_RUNTIMES
 
 
 PACKAGE_DIR = Path(__file__).resolve().parent
@@ -74,6 +75,17 @@ def _check_model_location() -> str:
     )
 
 
+def _check_js_runtime() -> str:
+    for name in JS_RUNTIMES:
+        path = shutil.which(name)
+        if path:
+            return path
+    raise RuntimeError(
+        "No JavaScript runtime found in PATH (needed by yt-dlp for YouTube). "
+        "Install one of: " + ", ".join(JS_RUNTIMES) + " (e.g. `brew install deno`)."
+    )
+
+
 def _check_artifacts_dir() -> str:
     artifacts_dir = _current_settings().artifacts_dir
     artifacts_dir.mkdir(parents=True, exist_ok=True)
@@ -97,6 +109,7 @@ def _run_environment_checks() -> tuple[dict[str, dict[str, Any]], list[str]]:
     for key, checker in (
         ("ffmpeg", _check_ffmpeg_binary),
         ("model", _check_model_location),
+        ("js_runtime", _check_js_runtime),
         ("artifacts", _check_artifacts_dir),
     ):
         try:

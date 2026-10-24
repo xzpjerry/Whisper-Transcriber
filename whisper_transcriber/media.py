@@ -11,6 +11,8 @@ DEFAULT_MODEL_PATH = os.environ.get(
     "MLX_WHISPER_MODEL",
     os.path.expanduser("~/.lmstudio/models/mlx-community/whisper-large-v3-turbo"),
 )
+# JS runtimes yt-dlp may use, in order of preference
+JS_RUNTIMES = ("deno", "node", "bun", "quickjs")
 
 
 @dataclass(frozen=True)
@@ -44,6 +46,9 @@ class MediaPipeline:
             "no_warnings": True,
             "format": "bestaudio/best",
             "cookiesfrombrowser": ("chrome",),
+            # YouTube requires a JS runtime to solve its challenges; yt-dlp only
+            # enables deno by default, so allow whichever one is installed.
+            "js_runtimes": {name: {} for name in JS_RUNTIMES},
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(youtube_url, download=True)
