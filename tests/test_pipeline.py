@@ -234,3 +234,37 @@ def test_run_job_classifies_progress_callback_failures_as_persistence_errors(tmp
     assert exc_info.value.stage == "downloading"
     assert exc_info.value.user_message == "Unable to persist job progress."
     assert isinstance(exc_info.value.__cause__, OSError)
+
+
+def test_run_job_reports_title_as_soon_as_download_finishes(tmp_path):
+    media_module = _load_module("whisper_transcriber.media")
+    pipeline_module = _load_module("whisper_transcriber.pipeline")
+    events: list[tuple[str, str]] = []
+
+    class FakeMediaPipeline:
+        def download_audio(self, youtube_url: str, working_dir: Path):
+            source_path = Path(working_dir) / "source.webm"
+            source_path.write_bytes(b"source-audio")
+            return media_module.DownloadedMedia(source_path=source_path, title="Episode 02")
+
+        def convert_to_mp3(self, source_audio_path: Path, destination_path: Path):
+            Path(destination_path).write_bytes(b"mp3")
+            return Path(destination_path)
+
+        def transcribe(self, mp3_path: Path, language_hint: str | None = None):
+            return media_module.TranscriptionResult(text="hi", language="en", segments=[])
+
+    pipeline_module.run_job(
+        job_id="job-title",
+        youtube_url="https://youtu.be/example",
+        artifacts_root=tmp_path / "artifacts",
+        media=FakeMediaPipeline(),
+        progress_callback=lambda stage, message: events.append(("progress", stage)),
+        title_callback=lambda title: events.append(("title", title)),
+    )
+
+    assert events[:3] == [
+        ("progress", "downloading"),
+        ("title", "Episode 02"),
+        ("progress", "converting"),
+    ]

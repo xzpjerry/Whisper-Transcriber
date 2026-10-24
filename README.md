@@ -6,6 +6,7 @@ Internal FastAPI app for transcribing YouTube audio with `mlx-whisper`. The web 
 
 - Python 3.11+
 - `ffmpeg` installed and available on `PATH`
+- A JavaScript runtime on `PATH` (`deno`, `node`, `bun`, or `quickjs`); yt-dlp needs one to solve YouTube's challenges
 - Access to the configured Whisper model path or Hugging Face repo id
 
 Install runtime dependencies:
@@ -49,6 +50,9 @@ Defaults are shown in parentheses.
 - `WORKER_POLL_SECONDS` (`2`): idle worker sleep interval.
 - `WORKER_HEARTBEAT_SECONDS` (`5`): worker heartbeat interval.
 - `HEARTBEAT_SECONDS` (`5`): legacy fallback for worker heartbeat configuration.
+- `MAX_JOB_ATTEMPTS` (`3`): how many times a job whose worker died may be claimed before it is marked failed.
+
+A running job's lease expires after 3× the heartbeat interval. The worker refreshes it in the background for the whole run, so long downloads and transcriptions are not mistaken for dead workers.
 
 ## Directory Layout
 
@@ -60,6 +64,7 @@ Defaults are shown in parentheses.
   - `subtitles.srt`
   - `subtitles.vtt`
   - `segments.json`
+  - `job.log`: the worker's log for this job, including yt-dlp warnings and the full traceback on failure
 
 Artifact cleanup runs on web startup and after a successful worker completion. It is bounded by both age and count, so old job folders are pruned automatically.
 
@@ -69,14 +74,17 @@ Artifact cleanup runs on web startup and after a successful worker completion. I
 
 - `ffmpeg` availability
 - Whisper model resolution
+- JavaScript runtime availability for yt-dlp
 - artifact directory writability
 
 If it returns `503`, check the `detail` values in the JSON response and fix the failing dependency or path.
 
 ## Troubleshooting
 
+- A job failed: open its page, expand **Details** under the error, and check `job.log` in the artifact list.
+- Downloads fail with "The page needs to be reloaded" or "No video formats found": YouTube changed again. Update yt-dlp with `python -m pip install -U "yt-dlp[default]" yt-dlp-ejs`.
 - `429 Too Many Requests`: the queue is full. Wait for existing jobs to finish or raise `MAX_QUEUE_DEPTH`.
-- `503` from `/healthz`: `ffmpeg`, the model path, or the artifacts directory is misconfigured.
+- `503` from `/healthz`: `ffmpeg`, the model path, the JavaScript runtime, or the artifacts directory is misconfigured.
 - Model not found: verify `MLX_WHISPER_MODEL` points to a local model directory or a valid Hugging Face repo id.
 - Artifact cleanup not happening: confirm both the web app and worker can write to `ARTIFACTS_DIR`.
 - Job stays queued: the worker is not running, or it cannot claim jobs from the database.

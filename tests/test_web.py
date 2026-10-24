@@ -267,3 +267,32 @@ def test_queue_limit_rejects_new_submissions_with_friendly_429(tmp_path, monkeyp
     assert response.status_code == 429
     payload = response.json()
     assert payload["detail"] == "The transcription queue is full. Please try again later."
+
+
+def test_failed_job_page_shows_error_detail_and_only_existing_artifacts(tmp_path, monkeypatch):
+    client, store, settings = _make_client(tmp_path, monkeypatch)
+    job = store.create_job(youtube_url="https://www.youtube.com/watch?v=broken")
+    artifact_dir = settings.artifacts_dir / job.job_id
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    (artifact_dir / "job.log").write_text("Traceback ...", encoding="utf-8")
+
+    _set_job_fields(
+        store,
+        job.job_id,
+        status="failed",
+        progress_stage="failed",
+        status_message="Unable to download audio from the provided URL.",
+        last_error_code="download_error",
+        last_error_message="Unable to download audio from the provided URL.",
+        last_error_detail="ERROR: [youtube] broken: This video is unavailable",
+        artifact_dir=str(artifact_dir),
+    )
+
+    html = client.get(f"/jobs/{job.job_id}").text
+    payload = client.get(f"/api/jobs/{job.job_id}").json()
+
+    assert "This video is unavailable" in html
+    assert f"/artifacts/{job.job_id}/job.log" in html
+    assert "transcript.txt" not in html
+    assert payload["last_error_detail"] == "ERROR: [youtube] broken: This video is unavailable"
+    assert [link["kind"] for link in payload["artifact_links"]] == ["log"]

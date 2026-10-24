@@ -12,7 +12,7 @@
   >
     <div class="panel-head">
       <div>
-        <h1>{{ job.display_title or "Job " ~ job.job_id }}</h1>
+        <h1 data-field="title">{{ job.display_title or "Job " ~ job.job_id }}</h1>
         <p class="lede">{{ job.youtube_url }}</p>
       </div>
       <span class="badge badge-{{ job.status }}" data-field="status">{{ job.status }}</span>
@@ -53,6 +53,15 @@
       </div>
     </dl>
 
+    <section class="panel-subsection error-box" data-field="error"{% if job.status != "failed" %} hidden{% endif %}>
+      <h2>Error</h2>
+      <p data-field="error-message">{{ job.last_error_message or "" }}</p>
+      <details data-field="error-detail-box"{% if not job.last_error_detail %} hidden{% endif %}>
+        <summary>Details</summary>
+        <pre class="preview" data-field="error-detail">{{ job.last_error_detail or "" }}</pre>
+      </details>
+    </section>
+
     <section class="panel-subsection">
       <div class="panel-head">
         <h2>Artifacts</h2>
@@ -79,11 +88,9 @@
       </ul>
     </section>
 
-    {% if preview %}
-      <section class="panel-subsection">
-        <h2>Transcript preview</h2>
-        <pre class="preview" data-field="preview">{{ preview }}</pre>
-      </section>
-    {% endif %}
+    <section class="panel-subsection" data-field="preview-box"{% if not preview %} hidden{% endif %}>
+      <h2>Transcript preview</h2>
+      <pre class="preview" data-field="preview">{{ preview or "" }}</pre>
+    </section>
   </section>
 {% endblock %}

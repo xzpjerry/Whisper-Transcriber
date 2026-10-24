@@ -14,7 +14,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from whisper_transcriber.artifacts import prune_artifacts
+from whisper_transcriber.artifacts import JOB_LOG_FILENAME, prune_artifacts
 from whisper_transcriber.config import Settings, load_settings
 from whisper_transcriber.db import connect_db
 from whisper_transcriber.job_store import JobRecord, JobStore
@@ -35,6 +35,7 @@ ARTIFACT_FILENAMES = (
     ("vtt", "Subtitles (.vtt)", "subtitles.vtt", False),
     ("segments", "Segments (.json)", "segments.json", False),
     ("audio", "Audio (.mp3)", "audio.mp3", False),
+    ("log", "Job log (.log)", JOB_LOG_FILENAME, False),
 )
 
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
@@ -148,8 +149,12 @@ def _artifact_links(job: JobRecord) -> list[dict[str, Any]]:
     if base is None:
         return []
 
+    artifact_dir = Path(job.artifact_dir)
     links: list[dict[str, Any]] = []
     for kind, label, filename, copyable in ARTIFACT_FILENAMES:
+        # Skip files a failed job never wrote or retention already removed.
+        if not (artifact_dir / filename).is_file():
+            continue
         links.append(
             {
                 "kind": kind,

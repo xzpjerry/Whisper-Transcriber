@@ -9,6 +9,11 @@ from pathlib import Path
 from whisper_transcriber.db import connect_db, ensure_schema
 
 
+# Total claims a job may get before a stale lease marks it failed instead of requeued
+DEFAULT_MAX_JOB_ATTEMPTS = 3
+WORKER_LOST_ERROR_CODE = "worker_lost"
+WORKER_LOST_MESSAGE = "The worker stopped repeatedly while processing this job."
+
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -31,6 +36,7 @@ class JobRecord:
     last_error_code: str | None
     last_error_message: str | None
     artifact_dir: str | None
+    last_error_detail: str | None = None
 
 
 class JobStore:
@@ -102,12 +108,13 @@ class JobStore:
         self,
         worker_id: str,
         heartbeat_timeout_seconds: int,
+        max_attempts: int = DEFAULT_MAX_JOB_ATTEMPTS,
     ) -> JobRecord | None:
         now = utc_now().isoformat()
         with connect_db(self.db_path) as conn:
             try:
                 conn.execute("BEGIN IMMEDIATE")
-                _requeue_stale_jobs(conn, heartbeat_timeout_seconds)
+                _requeue_stale_jobs(conn, heartbeat_timeout_seconds, max_attempts)
                 row = conn.execute(
                     """
                     SELECT job_id
@@ -133,7 +140,8 @@ class JobStore:
                         last_heartbeat_at = ?,
                         worker_id = ?,
                         last_error_code = NULL,
-                        last_error_message = NULL
+                        last_error_message = NULL,
+                        last_error_detail = NULL
                     WHERE job_id = ? AND status = 'queued'
                     """,
                     (
@@ -180,6 +188,38 @@ class JobStore:
                 },
             )
 
+    def touch(
+        self,
+        job_id: str,
+        worker_id: str,
+        claim_attempt_count: int,
+    ) -> bool:
+        """Refresh the lease without changing the visible progress."""
+        with connect_db(self.db_path) as conn:
+            return _update_owned_running_job(
+                conn,
+                job_id=job_id,
+                worker_id=worker_id,
+                claim_attempt_count=claim_attempt_count,
+                fields={"last_heartbeat_at": utc_now().isoformat()},
+            )
+
+    def set_display_title(
+        self,
+        job_id: str,
+        worker_id: str,
+        claim_attempt_count: int,
+        display_title: str,
+    ) -> bool:
+        with connect_db(self.db_path) as conn:
+            return _update_owned_running_job(
+                conn,
+                job_id=job_id,
+                worker_id=worker_id,
+                claim_attempt_count=claim_attempt_count,
+                fields={"display_title": display_title},
+            )
+
     def mark_completed(
         self,
         job_id: str,
@@ -216,34 +256,75 @@ class JobStore:
         claim_attempt_count: int,
         error_code: str,
         message: str,
+        detail: str | None = None,
+        artifact_dir: str | None = None,
     ) -> bool:
         now = utc_now().isoformat()
+        fields: dict[str, str | None] = {
+            "status": "failed",
+            "progress_stage": "failed",
+            "status_message": message,
+            "finished_at": now,
+            "last_heartbeat_at": now,
+            "last_error_code": error_code,
+            "last_error_message": message,
+            "last_error_detail": detail,
+        }
+        if artifact_dir is not None:
+            fields["artifact_dir"] = artifact_dir
         with connect_db(self.db_path) as conn:
             return _update_owned_running_job(
                 conn,
                 job_id=job_id,
                 worker_id=worker_id,
                 claim_attempt_count=claim_attempt_count,
-                fields={
-                    "status": "failed",
-                    "progress_stage": "failed",
-                    "status_message": message,
-                    "finished_at": now,
-                    "last_heartbeat_at": now,
-                    "last_error_code": error_code,
-                    "last_error_message": message,
-                },
+                fields=fields,
             )
 
-    def requeue_stale_jobs(self, heartbeat_timeout_seconds: int) -> int:
+    def requeue_stale_jobs(
+        self,
+        heartbeat_timeout_seconds: int,
+        max_attempts: int = DEFAULT_MAX_JOB_ATTEMPTS,
+    ) -> int:
         with connect_db(self.db_path) as conn:
-            requeued = _requeue_stale_jobs(conn, heartbeat_timeout_seconds)
+            requeued = _requeue_stale_jobs(conn, heartbeat_timeout_seconds, max_attempts)
             conn.commit()
         return requeued
 
 
-def _requeue_stale_jobs(conn: sqlite3.Connection, heartbeat_timeout_seconds: int) -> int:
-    cutoff = (utc_now() - timedelta(seconds=heartbeat_timeout_seconds)).isoformat()
+def _requeue_stale_jobs(
+    conn: sqlite3.Connection,
+    heartbeat_timeout_seconds: int,
+    max_attempts: int = DEFAULT_MAX_JOB_ATTEMPTS,
+) -> int:
+    now = utc_now()
+    cutoff = (now - timedelta(seconds=heartbeat_timeout_seconds)).isoformat()
+    # Jobs that already used every attempt fail instead of looping forever.
+    conn.execute(
+        """
+        UPDATE jobs
+        SET status = 'failed',
+            progress_stage = 'failed',
+            status_message = ?,
+            finished_at = ?,
+            worker_id = NULL,
+            last_error_code = ?,
+            last_error_message = ?,
+            last_error_detail = ?
+        WHERE status = 'running'
+          AND COALESCE(last_heartbeat_at, started_at, created_at) < ?
+          AND attempt_count >= ?
+        """,
+        (
+            WORKER_LOST_MESSAGE,
+            now.isoformat(),
+            WORKER_LOST_ERROR_CODE,
+            WORKER_LOST_MESSAGE,
+            "Worker heartbeat went stale on every attempt.",
+            cutoff,
+            max_attempts,
+        ),
+    )
     cursor = conn.execute(
         """
         UPDATE jobs
@@ -309,4 +390,5 @@ def _row_to_job(row: sqlite3.Row) -> JobRecord:
         last_error_code=row["last_error_code"],
         last_error_message=row["last_error_message"],
         artifact_dir=row["artifact_dir"],
+        last_error_detail=row["last_error_detail"],
     )

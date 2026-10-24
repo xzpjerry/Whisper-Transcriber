@@ -17,6 +17,7 @@ from whisper_transcriber.media import MediaPipeline, TranscriptionResult
 
 
 ProgressCallback = Callable[[str, str], None]
+TitleCallback = Callable[[str], None]
 T = TypeVar("T")
 
 
@@ -40,6 +41,7 @@ def run_job(
     media: MediaPipeline | None = None,
     language_hint: str | None = None,
     progress_callback: ProgressCallback | None = None,
+    title_callback: TitleCallback | None = None,
 ) -> JobRunResult:
     media_pipeline = media or MediaPipeline()
 
@@ -51,6 +53,8 @@ def run_job(
             DownloadError,
             lambda: media_pipeline.download_audio(youtube_url, working_dir),
         )
+        if title_callback is not None and downloaded.title:
+            _run_boundary(PersistenceError, lambda: title_callback(downloaded.title))
 
         artifacts = _run_boundary(
             PersistenceError,

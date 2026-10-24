@@ -10,6 +10,9 @@ from typing import Any
 from whisper_transcriber.formatters import to_srt, to_vtt
 
 
+JOB_LOG_FILENAME = "job.log"
+
+
 @dataclass(frozen=True)
 class JobArtifacts:
     artifact_dir: Path

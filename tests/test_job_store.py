@@ -22,10 +22,13 @@ def test_load_settings_uses_expected_defaults(tmp_path, monkeypatch):
         "WORKER_POLL_SECONDS",
         "WORKER_HEARTBEAT_SECONDS",
         "HEARTBEAT_SECONDS",
+        "MAX_JOB_ATTEMPTS",
     ):
         monkeypatch.delenv(key, raising=False)
 
     settings = load_settings()
+
+    assert settings.max_job_attempts == 3
 
     assert str(settings.artifacts_dir) == "artifacts"
     assert str(settings.db_path) == "data/transcriber.sqlite3"
@@ -665,3 +668,122 @@ def test_two_claimers_contend_for_one_job_on_same_sqlite_file(tmp_path):
     assert refreshed.status == "running"
     assert refreshed.attempt_count == 1
     assert refreshed.worker_id == winners[0]
+
+
+def _make_stale(db_path, job_id: str) -> None:
+    stale_time = datetime.now(timezone.utc) - timedelta(seconds=120)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE jobs SET last_heartbeat_at = ? WHERE job_id = ?",
+            (stale_time.isoformat(), job_id),
+        )
+        conn.commit()
+
+
+def test_touch_refreshes_lease_only_for_the_owning_claim(tmp_path):
+    store = JobStore(tmp_path / "jobs.sqlite3")
+    created = store.create_job(youtube_url="https://youtu.be/touch")
+    claimed = store.claim_next_job(worker_id="worker-1", heartbeat_timeout_seconds=30)
+    assert claimed is not None
+    _make_stale(tmp_path / "jobs.sqlite3", created.job_id)
+
+    assert store.touch(created.job_id, worker_id="worker-2", claim_attempt_count=1) is False
+    assert store.touch(created.job_id, worker_id="worker-1", claim_attempt_count=1) is True
+
+    refreshed = store.get_job(created.job_id)
+    assert refreshed is not None
+    assert refreshed.progress_stage == "claimed"
+    assert store.requeue_stale_jobs(heartbeat_timeout_seconds=30) == 0
+
+
+def test_stale_job_that_used_every_attempt_fails_instead_of_requeueing(tmp_path):
+    db_path = tmp_path / "jobs.sqlite3"
+    store = JobStore(db_path)
+    created = store.create_job(youtube_url="https://youtu.be/crashy")
+
+    for attempt in (1, 2):
+        claimed = store.claim_next_job(
+            worker_id=f"worker-{attempt}",
+            heartbeat_timeout_seconds=30,
+            max_attempts=2,
+        )
+        assert claimed is not None
+        assert claimed.attempt_count == attempt
+        _make_stale(db_path, created.job_id)
+
+    assert store.requeue_stale_jobs(heartbeat_timeout_seconds=30, max_attempts=2) == 0
+    failed = store.get_job(created.job_id)
+    assert failed is not None
+    assert failed.status == "failed"
+    assert failed.last_error_code == "worker_lost"
+    assert failed.finished_at is not None
+    assert failed.worker_id is None
+    assert store.claim_next_job(worker_id="worker-3", heartbeat_timeout_seconds=30) is None
+
+
+def test_set_display_title_and_failure_detail_are_persisted(tmp_path):
+    store = JobStore(tmp_path / "jobs.sqlite3")
+    created = store.create_job(youtube_url="https://youtu.be/titled")
+    store.claim_next_job(worker_id="worker-1", heartbeat_timeout_seconds=30)
+
+    assert store.set_display_title(
+        created.job_id,
+        worker_id="worker-1",
+        claim_attempt_count=1,
+        display_title="Early Title",
+    )
+    assert store.mark_failed(
+        created.job_id,
+        worker_id="worker-1",
+        claim_attempt_count=1,
+        error_code="download_error",
+        message="Unable to download audio from the provided URL.",
+        detail="ERROR: [youtube] abc: This video is unavailable",
+        artifact_dir=str(tmp_path / "artifacts" / created.job_id),
+    )
+
+    failed = store.get_job(created.job_id)
+    assert failed is not None
+    assert failed.display_title == "Early Title"
+    assert failed.last_error_detail == "ERROR: [youtube] abc: This video is unavailable"
+    assert failed.artifact_dir == str(tmp_path / "artifacts" / created.job_id)
+
+
+def test_ensure_schema_adds_last_error_detail_to_existing_database(tmp_path):
+    db_path = tmp_path / "jobs.sqlite3"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE jobs (
+                job_id TEXT PRIMARY KEY,
+                youtube_url TEXT NOT NULL,
+                display_title TEXT,
+                language_hint TEXT,
+                status TEXT NOT NULL,
+                progress_stage TEXT NOT NULL,
+                status_message TEXT NOT NULL,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                started_at TEXT,
+                finished_at TEXT,
+                last_heartbeat_at TEXT,
+                worker_id TEXT,
+                last_error_code TEXT,
+                last_error_message TEXT,
+                artifact_dir TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO jobs (job_id, youtube_url, status, progress_stage, status_message, created_at)
+            VALUES ('old-job', 'https://youtu.be/old', 'completed', 'completed', 'Completed', '2026-03-01T00:00:00+00:00')
+            """
+        )
+        conn.commit()
+
+    store = JobStore(db_path)
+
+    old_job = store.get_job("old-job")
+    assert old_job is not None
+    assert old_job.last_error_detail is None

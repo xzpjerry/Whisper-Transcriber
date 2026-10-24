@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,6 +14,10 @@ DEFAULT_MODEL_PATH = os.environ.get(
 )
 # JS runtimes yt-dlp may use, in order of preference
 JS_RUNTIMES = ("deno", "node", "bun", "quickjs")
+# Lines of ffmpeg stderr to keep when a conversion fails
+FFMPEG_STDERR_TAIL_LINES = 5
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -43,7 +48,9 @@ class MediaPipeline:
         ydl_opts = {
             "outtmpl": str(working_dir / "%(title)s.%(ext)s"),
             "quiet": True,
-            "no_warnings": True,
+            "noprogress": True,
+            # Route yt-dlp output (including warnings) into the job log.
+            "logger": logger,
             "format": "bestaudio/best",
             "cookiesfrombrowser": ("chrome",),
             # YouTube requires a JS runtime to solve its challenges; yt-dlp only
@@ -83,7 +90,13 @@ class MediaPipeline:
             audio_bitrate="160k",
             vn=None,
         )
-        ffmpeg.run(stream, quiet=True, overwrite_output=True)
+        try:
+            ffmpeg.run(stream, quiet=True, overwrite_output=True)
+        except ffmpeg.Error as exc:
+            stderr = (exc.stderr or b"").decode("utf-8", errors="replace")
+            logger.error("ffmpeg stderr:\n%s", stderr)
+            tail = "\n".join(stderr.strip().splitlines()[-FFMPEG_STDERR_TAIL_LINES:])
+            raise RuntimeError(f"ffmpeg failed: {tail or exc}") from exc
         return destination_path
 
     def transcribe(

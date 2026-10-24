@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Mapping
 
 from whisper_transcriber.environment import get_float, get_int, get_path
+from whisper_transcriber.job_store import DEFAULT_MAX_JOB_ATTEMPTS
 
 
 @dataclass(frozen=True)
@@ -17,6 +18,7 @@ class Settings:
     max_artifacts: int
     worker_poll_seconds: float
     heartbeat_seconds: float
+    max_job_attempts: int = DEFAULT_MAX_JOB_ATTEMPTS
 
 
 def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
@@ -33,4 +35,5 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
             get_float("HEARTBEAT_SECONDS", 5, source),
             environ,
         ),
+        max_job_attempts=get_int("MAX_JOB_ATTEMPTS", DEFAULT_MAX_JOB_ATTEMPTS, environ),
     )

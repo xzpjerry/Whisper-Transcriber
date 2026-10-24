@@ -4,6 +4,12 @@ import sqlite3
 from pathlib import Path
 
 
+# Columns added after the initial schema, applied with ALTER TABLE when missing
+ADDED_COLUMNS = (
+    ("last_error_detail", "TEXT"),
+)
+
+
 def connect_db(db_path: str | Path) -> sqlite3.Connection:
     path = Path(db_path)
     if str(path) != ":memory:":
@@ -33,11 +39,13 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             worker_id TEXT,
             last_error_code TEXT,
             last_error_message TEXT,
-            artifact_dir TEXT
+            artifact_dir TEXT,
+            last_error_detail TEXT
         )
         """
     )
     _migrate_nullable_display_title(conn)
+    _add_missing_columns(conn)
     conn.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_jobs_status_created_at
@@ -133,6 +141,16 @@ def _migrate_nullable_display_title(conn: sqlite3.Connection) -> None:
         raise
 
     conn.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+
+
+def _add_missing_columns(conn: sqlite3.Connection) -> None:
+    existing = {
+        _pragma_table_info_value(column, "name", 1)
+        for column in conn.execute("PRAGMA table_info(jobs)").fetchall()
+    }
+    for name, column_type in ADDED_COLUMNS:
+        if name not in existing:
+            conn.execute(f"ALTER TABLE jobs ADD COLUMN {name} {column_type}")
 
 
 def _pragma_table_info_value(

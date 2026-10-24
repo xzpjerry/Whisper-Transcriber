@@ -4,11 +4,17 @@
 
   const statusUrl = panel.dataset.statusUrl;
   const pollInterval = Number(panel.dataset.pollInterval || "2000");
+  const titleEl = panel.querySelector('[data-field="title"]');
   const statusEl = panel.querySelector('[data-field="status"]');
   const stageEl = panel.querySelector('[data-field="progress-stage"]');
   const messageEl = panel.querySelector('[data-field="status-message"]');
   const artifactsEl = panel.querySelector('[data-field="artifact-links"]');
+  const previewBoxEl = panel.querySelector('[data-field="preview-box"]');
   const previewEl = panel.querySelector('[data-field="preview"]');
+  const errorEl = panel.querySelector('[data-field="error"]');
+  const errorMessageEl = panel.querySelector('[data-field="error-message"]');
+  const errorDetailBoxEl = panel.querySelector('[data-field="error-detail-box"]');
+  const errorDetailEl = panel.querySelector('[data-field="error-detail"]');
 
   function escapeHtml(value) {
     return String(value)
@@ -86,10 +92,23 @@
   }
 
   function update(payload) {
-    if (statusEl) statusEl.textContent = payload.status;
+    if (titleEl && payload.display_title) titleEl.textContent = payload.display_title;
+    if (statusEl) {
+      statusEl.textContent = payload.status;
+      statusEl.className = `badge badge-${payload.status}`;
+    }
     if (stageEl) stageEl.textContent = payload.progress_stage;
     if (messageEl) messageEl.textContent = payload.status_message;
-    if (previewEl && payload.preview) previewEl.textContent = payload.preview;
+    if (previewEl && payload.preview) {
+      previewEl.textContent = payload.preview;
+      if (previewBoxEl) previewBoxEl.hidden = false;
+    }
+    if (errorEl) {
+      errorEl.hidden = payload.status !== "failed";
+      if (errorMessageEl) errorMessageEl.textContent = payload.last_error_message || "";
+      if (errorDetailEl) errorDetailEl.textContent = payload.last_error_detail || "";
+      if (errorDetailBoxEl) errorDetailBoxEl.hidden = !payload.last_error_detail;
+    }
     renderArtifacts(payload.artifact_links);
   }
 
