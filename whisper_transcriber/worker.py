@@ -71,6 +71,7 @@ def process_one_job(
                     artifacts_root=artifacts_root,
                     media=media,
                     language_hint=claimed_job.language_hint,
+                    prefer_subtitles=not claimed_job.force_whisper,
                     progress_callback=_make_progress_callback(
                         store=store,
                         job_id=job_id,
@@ -107,6 +108,8 @@ def process_one_job(
                 claim_attempt_count=attempt,
                 artifact_dir=str(result.artifact_dir),
                 display_title=result.display_title,
+                transcript_source=result.source,
+                transcript_language=result.language,
             ):
                 logger.warning("Job %s finished after its lease was lost", job_id)
 

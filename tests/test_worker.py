@@ -95,6 +95,7 @@ def test_process_one_job_completes_claimed_job_and_emits_heartbeats(tmp_path):
             artifact_dir: str | None,
             display_title: str | None = None,
             message: str = "Completed",
+            **transcript,
         ) -> bool:
             self.completed.append(
                 (
@@ -113,6 +114,7 @@ def test_process_one_job_completes_claimed_job_and_emits_heartbeats(tmp_path):
                 artifact_dir=artifact_dir,
                 display_title=display_title,
                 message=message,
+                **transcript,
             )
 
         def mark_failed(
@@ -164,6 +166,7 @@ def test_process_one_job_completes_claimed_job_and_emits_heartbeats(tmp_path):
         language_hint: str | None = None,
         progress_callback=None,
         title_callback=None,
+        prefer_subtitles=False,
     ):
         calls.append(
             {
@@ -172,6 +175,7 @@ def test_process_one_job_completes_claimed_job_and_emits_heartbeats(tmp_path):
                 "artifacts_root": Path(artifacts_root),
                 "language_hint": language_hint,
                 "has_progress_callback": progress_callback is not None,
+                "prefer_subtitles": prefer_subtitles,
             }
         )
         assert callable(progress_callback)
@@ -180,6 +184,8 @@ def test_process_one_job_completes_claimed_job_and_emits_heartbeats(tmp_path):
         return SimpleNamespace(
             artifact_dir=Path(artifacts_root) / job_id,
             display_title="Recovered Title",
+            source="subtitles",
+            language="en",
         )
 
     def fake_prune_artifacts(
@@ -221,6 +227,7 @@ def test_process_one_job_completes_claimed_job_and_emits_heartbeats(tmp_path):
             "artifacts_root": tmp_path / "artifacts",
             "language_hint": "en",
             "has_progress_callback": True,
+            "prefer_subtitles": True,
         }
     ]
     assert recording_store.heartbeats == [
@@ -257,6 +264,8 @@ def test_process_one_job_completes_claimed_job_and_emits_heartbeats(tmp_path):
     assert refreshed.status_message == "Completed"
     assert refreshed.display_title == "Recovered Title"
     assert refreshed.artifact_dir == str(tmp_path / "artifacts" / created.job_id)
+    assert refreshed.transcript_source == "subtitles"
+    assert refreshed.transcript_language == "en"
 
 
 def test_process_one_job_marks_pipeline_error_as_failed(tmp_path):
@@ -334,6 +343,7 @@ def test_process_one_job_marks_pipeline_error_as_failed(tmp_path):
             artifact_dir: str | None,
             display_title: str | None = None,
             message: str = "Completed",
+            **transcript,
         ) -> bool:
             return self.wrapped.mark_completed(
                 job_id,
@@ -342,6 +352,7 @@ def test_process_one_job_marks_pipeline_error_as_failed(tmp_path):
                 artifact_dir=artifact_dir,
                 display_title=display_title,
                 message=message,
+                **transcript,
             )
 
         def mark_failed(
@@ -573,6 +584,8 @@ def test_lease_keeper_stops_a_second_worker_from_stealing_a_long_job(tmp_path):
         return SimpleNamespace(
             artifact_dir=Path(artifacts_root) / job_id,
             display_title="Long Episode",
+            source="whisper",
+            language="en",
         )
 
     original_run_job = worker_module.run_job

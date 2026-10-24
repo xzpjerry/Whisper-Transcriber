@@ -19,6 +19,7 @@ from whisper_transcriber.config import Settings, load_settings
 from whisper_transcriber.db import connect_db
 from whisper_transcriber.job_store import JobRecord, JobStore
 from whisper_transcriber.media import JS_RUNTIMES
+from whisper_transcriber.pipeline import SOURCE_SUBTITLES, SOURCE_WHISPER
 
 
 PACKAGE_DIR = Path(__file__).resolve().parent
@@ -187,8 +188,18 @@ def _job_preview(job: JobRecord) -> str | None:
     return transcript_path.read_text(encoding="utf-8")[:1000]
 
 
+def _source_label(job: JobRecord) -> str:
+    language = job.transcript_language
+    if job.transcript_source == SOURCE_SUBTITLES:
+        return f"Video subtitles ({language})" if language else "Video subtitles"
+    if job.transcript_source == SOURCE_WHISPER:
+        return f"Whisper ({language})" if language else "Whisper"
+    return "Whisper (requested)" if job.force_whisper else "Pending"
+
+
 def _job_payload(job: JobRecord) -> dict[str, Any]:
     payload = asdict(job)
+    payload["source_label"] = _source_label(job)
     payload["detail_url"] = _job_url(job.job_id)
     payload["api_url"] = _api_job_url(job.job_id)
     payload["artifact_links"] = _artifact_links(job)
@@ -227,6 +238,7 @@ def _enqueue_job(
     settings: Settings,
     youtube_url: str,
     language: str | None,
+    force_whisper: bool = False,
 ) -> dict[str, Any]:
     if _queue_depth(store) >= settings.max_queue_depth:
         raise HTTPException(
@@ -237,6 +249,7 @@ def _enqueue_job(
     job = store.create_job(
         youtube_url=_normalize_url(youtube_url),
         language_hint=_normalize_language(language),
+        force_whisper=force_whisper,
     )
     return _job_payload(job)
 
@@ -300,12 +313,14 @@ def create_app(
     def create_job(
         youtube_url: str = Form(...),
         language: str = Form(default=""),
+        force_whisper: str = Form(default=""),
     ) -> RedirectResponse:
         job = _enqueue_job(
             store=app.state.store,
             settings=resolved_settings,
             youtube_url=youtube_url,
             language=language,
+            force_whisper=bool(force_whisper),
         )
         return RedirectResponse(job["detail_url"], status_code=303)
 
@@ -314,7 +329,7 @@ def create_app(
         youtube_url: str = Form(...),
         language: str = Form(default=""),
     ) -> RedirectResponse:
-        return create_job(youtube_url=youtube_url, language=language)
+        return create_job(youtube_url=youtube_url, language=language, force_whisper="")
 
     @app.get("/jobs")
     def job_list(request: Request) -> HTMLResponse:
@@ -361,6 +376,7 @@ def create_app(
                 if payload.get("language_hint") is not None
                 else payload.get("language")
             ),
+            force_whisper=bool(payload.get("force_whisper")),
         )
         return JSONResponse(job, status_code=202)
 

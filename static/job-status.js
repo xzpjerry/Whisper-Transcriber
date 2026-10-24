@@ -8,6 +8,7 @@
   const statusEl = panel.querySelector('[data-field="status"]');
   const stageEl = panel.querySelector('[data-field="progress-stage"]');
   const messageEl = panel.querySelector('[data-field="status-message"]');
+  const sourceEl = panel.querySelector('[data-field="source"]');
   const artifactsEl = panel.querySelector('[data-field="artifact-links"]');
   const previewBoxEl = panel.querySelector('[data-field="preview-box"]');
   const previewEl = panel.querySelector('[data-field="preview"]');
@@ -99,6 +100,7 @@
     }
     if (stageEl) stageEl.textContent = payload.progress_stage;
     if (messageEl) messageEl.textContent = payload.status_message;
+    if (sourceEl) sourceEl.textContent = payload.source_label;
     if (previewEl && payload.preview) {
       previewEl.textContent = payload.preview;
       if (previewBoxEl) previewBoxEl.hidden = false;

@@ -32,6 +32,10 @@
         <dd>{{ job.language_hint or "None" }}</dd>
       </div>
       <div>
+        <dt>Transcript source</dt>
+        <dd data-field="source">{{ job.source_label }}</dd>
+      </div>
+      <div>
         <dt>Attempts</dt>
         <dd>{{ job.attempt_count }}</dd>
       </div>

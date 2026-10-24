@@ -321,3 +321,34 @@ def test_worker_lost_job_still_links_its_job_log(tmp_path, monkeypatch):
     assert [link["href"] for link in payload["artifact_links"]] == [
         f"/artifacts/{job.job_id}/job.log"
     ]
+
+
+def test_form_can_force_whisper_and_job_page_shows_transcript_source(tmp_path, monkeypatch):
+    client, store, _settings = _make_client(tmp_path, monkeypatch)
+
+    forced = client.post(
+        "/jobs",
+        data={"youtube_url": "https://www.youtube.com/watch?v=a", "force_whisper": "1"},
+        follow_redirects=False,
+    )
+    default = client.post(
+        "/api/transcribe",
+        json={"youtube_url": "https://www.youtube.com/watch?v=b"},
+    ).json()
+
+    forced_id = forced.headers["location"].rsplit("/", 1)[-1]
+    assert store.get_job(forced_id).force_whisper is True
+    assert store.get_job(default["job_id"]).force_whisper is False
+    assert client.get(f"/api/jobs/{forced_id}").json()["source_label"] == "Whisper (requested)"
+    assert default["source_label"] == "Pending"
+
+    _set_job_fields(
+        store,
+        default["job_id"],
+        status="completed",
+        transcript_source="subtitles",
+        transcript_language="zh-Hans",
+    )
+
+    assert "Video subtitles (zh-Hans)" in client.get(f"/jobs/{default['job_id']}").text
+    assert 'name="force_whisper"' in client.get("/").text

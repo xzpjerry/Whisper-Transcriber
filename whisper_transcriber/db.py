@@ -7,6 +7,9 @@ from pathlib import Path
 # Columns added after the initial schema, applied with ALTER TABLE when missing
 ADDED_COLUMNS = (
     ("last_error_detail", "TEXT"),
+    ("force_whisper", "INTEGER NOT NULL DEFAULT 0"),
+    ("transcript_source", "TEXT"),
+    ("transcript_language", "TEXT"),
 )
 
 
@@ -40,7 +43,10 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             last_error_code TEXT,
             last_error_message TEXT,
             artifact_dir TEXT,
-            last_error_detail TEXT
+            last_error_detail TEXT,
+            force_whisper INTEGER NOT NULL DEFAULT 0,
+            transcript_source TEXT,
+            transcript_language TEXT
         )
         """
     )

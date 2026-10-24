@@ -37,6 +37,14 @@ python worker.py
 
 The app and worker should point at the same SQLite database and artifacts directory.
 
+## Uploaded Subtitles
+
+When a video already has uploaded subtitles in its spoken language, the worker uses them instead of running Whisper, which takes seconds instead of minutes. YouTube's automatic captions are never used; Whisper is more accurate.
+
+The spoken language comes from the job's language hint, then from YouTube's metadata. If neither is known and the video has uploaded subtitles, the worker downloads the audio and lets Whisper detect the language from the first 30 seconds. Subtitle tracks in any other language are translations and are ignored. If fetching the subtitles fails, the job falls back to Whisper.
+
+Jobs answered from subtitles have no `audio.mp3`. The job page shows where the transcript came from. To always use Whisper, tick **Always transcribe with Whisper** on the submit form, or send `"force_whisper": true` to `/api/transcribe`.
+
 ## Environment Variables
 
 Defaults are shown in parentheses.
@@ -59,14 +67,14 @@ A running job's lease expires after 3× the heartbeat interval. The worker refre
 - `data/` stores the SQLite database and other local state.
 - `artifacts/<job_id>/` stores one job's output.
 - Each job directory may include:
-  - `audio.mp3`
+  - `audio.mp3` (not for jobs answered from uploaded subtitles)
   - `transcript.txt`
   - `subtitles.srt`
   - `subtitles.vtt`
   - `segments.json`
   - `job.log`: the worker's log for this job, including yt-dlp warnings and the full traceback on failure
 
-Artifact cleanup runs on web startup and after a successful worker completion. It is bounded by both age and count, so old job folders are pruned automatically.
+Artifact cleanup runs on web startup and after every job the worker finishes, successful or not. It is bounded by both age and count, so old job folders are pruned automatically.
 
 ## Health Check
 

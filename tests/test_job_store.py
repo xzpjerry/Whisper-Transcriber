@@ -787,3 +787,26 @@ def test_ensure_schema_adds_last_error_detail_to_existing_database(tmp_path):
     old_job = store.get_job("old-job")
     assert old_job is not None
     assert old_job.last_error_detail is None
+    assert old_job.force_whisper is False
+    assert old_job.transcript_source is None
+
+
+def test_force_whisper_and_transcript_source_are_persisted(tmp_path):
+    store = JobStore(tmp_path / "jobs.sqlite3")
+    created = store.create_job(youtube_url="https://youtu.be/forced", force_whisper=True)
+    claimed = store.claim_next_job(worker_id="worker-1", heartbeat_timeout_seconds=30)
+    assert claimed is not None and claimed.force_whisper is True
+
+    store.mark_completed(
+        created.job_id,
+        worker_id="worker-1",
+        claim_attempt_count=claimed.attempt_count,
+        artifact_dir="artifacts/x",
+        transcript_source="whisper",
+        transcript_language="en",
+    )
+
+    finished = store.get_job(created.job_id)
+    assert finished is not None
+    assert finished.transcript_source == "whisper"
+    assert finished.transcript_language == "en"

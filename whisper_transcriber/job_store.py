@@ -37,6 +37,11 @@ class JobRecord:
     last_error_message: str | None
     artifact_dir: str | None
     last_error_detail: str | None = None
+    # Skip the video's own subtitles and always transcribe with Whisper
+    force_whisper: bool = False
+    # "subtitles" or "whisper", set when the job completes
+    transcript_source: str | None = None
+    transcript_language: str | None = None
 
 
 class JobStore:
@@ -50,6 +55,7 @@ class JobStore:
         youtube_url: str,
         display_title: str | None = None,
         language_hint: str | None = None,
+        force_whisper: bool = False,
     ) -> JobRecord:
         now = utc_now().isoformat()
         job_id = uuid.uuid4().hex
@@ -65,8 +71,9 @@ class JobStore:
                     progress_stage,
                     status_message,
                     attempt_count,
-                    created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    created_at,
+                    force_whisper
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job_id,
@@ -78,6 +85,7 @@ class JobStore:
                     "Queued",
                     0,
                     now,
+                    int(force_whisper),
                 ),
             )
             conn.commit()
@@ -228,6 +236,8 @@ class JobStore:
         artifact_dir: str | None,
         display_title: str | None = None,
         message: str = "Completed",
+        transcript_source: str | None = None,
+        transcript_language: str | None = None,
     ) -> bool:
         now = utc_now().isoformat()
         fields: dict[str, str | None] = {
@@ -237,6 +247,8 @@ class JobStore:
             "finished_at": now,
             "last_heartbeat_at": now,
             "artifact_dir": artifact_dir,
+            "transcript_source": transcript_source,
+            "transcript_language": transcript_language,
         }
         if display_title is not None:
             fields["display_title"] = display_title
@@ -391,4 +403,7 @@ def _row_to_job(row: sqlite3.Row) -> JobRecord:
         last_error_message=row["last_error_message"],
         artifact_dir=row["artifact_dir"],
         last_error_detail=row["last_error_detail"],
+        force_whisper=bool(row["force_whisper"]),
+        transcript_source=row["transcript_source"],
+        transcript_language=row["transcript_language"],
     )

@@ -29,7 +29,7 @@ def test_run_job_writes_expected_artifacts_under_a_per_job_directory(tmp_path):
         def __init__(self) -> None:
             self.calls: list[tuple[object, ...]] = []
 
-        def download_audio(self, youtube_url: str, working_dir: Path):
+        def download_audio(self, youtube_url: str, working_dir: Path, video=None):
             self.calls.append(("download_audio", youtube_url, working_dir))
             source_path = Path(working_dir) / "episode-source.webm"
             source_path.write_bytes(b"source-audio")
@@ -130,7 +130,7 @@ def test_run_job_classifies_download_failures_as_typed_pipeline_errors(tmp_path)
     pipeline_module = _load_module("whisper_transcriber.pipeline")
 
     class FailingMediaPipeline:
-        def download_audio(self, youtube_url: str, working_dir: Path):
+        def download_audio(self, youtube_url: str, working_dir: Path, video=None):
             raise RuntimeError("download exploded")
 
     with pytest.raises(errors_module.DownloadError, match="download exploded") as exc_info:
@@ -157,7 +157,7 @@ def test_run_job_classifies_artifact_setup_failures_as_persistence_errors(tmp_pa
     pipeline_module = _load_module("whisper_transcriber.pipeline")
 
     class FakeMediaPipeline:
-        def download_audio(self, youtube_url: str, working_dir: Path):
+        def download_audio(self, youtube_url: str, working_dir: Path, video=None):
             source_path = Path(working_dir) / "episode-source.webm"
             source_path.write_bytes(b"source-audio")
             return media_module.DownloadedMedia(
@@ -203,7 +203,7 @@ def test_run_job_classifies_progress_callback_failures_as_persistence_errors(tmp
         def __init__(self) -> None:
             self.download_called = False
 
-        def download_audio(self, youtube_url: str, working_dir: Path):
+        def download_audio(self, youtube_url: str, working_dir: Path, video=None):
             self.download_called = True
             source_path = Path(working_dir) / "episode-source.webm"
             source_path.write_bytes(b"source-audio")
@@ -242,7 +242,7 @@ def test_run_job_reports_title_as_soon_as_download_finishes(tmp_path):
     events: list[tuple[str, str]] = []
 
     class FakeMediaPipeline:
-        def download_audio(self, youtube_url: str, working_dir: Path):
+        def download_audio(self, youtube_url: str, working_dir: Path, video=None):
             source_path = Path(working_dir) / "source.webm"
             source_path.write_bytes(b"source-audio")
             return media_module.DownloadedMedia(source_path=source_path, title="Episode 02")
@@ -268,3 +268,173 @@ def test_run_job_reports_title_as_soon_as_download_finishes(tmp_path):
         ("title", "Episode 02"),
         ("progress", "converting"),
     ]
+
+
+class _SubtitleAwareMedia:
+    """Fake media pipeline for the subtitle-first flow."""
+
+    def __init__(
+        self,
+        media_module,
+        *,
+        language: str | None,
+        subtitle_languages: tuple[str, ...],
+        detected: str | None = None,
+        fetch_error: Exception | None = None,
+    ) -> None:
+        self.media_module = media_module
+        self.video = media_module.VideoInfo(
+            title="Probed Title",
+            language=language,
+            subtitle_languages=subtitle_languages,
+            raw={},
+        )
+        self.detected = detected
+        self.fetch_error = fetch_error
+        self.calls: list[str] = []
+
+    def probe(self, youtube_url):
+        self.calls.append("probe")
+        return self.video
+
+    def fetch_subtitles(self, video, language):
+        self.calls.append(f"fetch_subtitles {language}")
+        if self.fetch_error is not None:
+            raise self.fetch_error
+        return self.media_module.TranscriptionResult(
+            text="from subtitles",
+            language=language,
+            segments=[{"start": 0.0, "end": 1.0, "text": "from subtitles"}],
+        )
+
+    def download_audio(self, youtube_url, working_dir, video=None):
+        self.calls.append(f"download_audio reused={video is self.video}")
+        source_path = Path(working_dir) / "source.webm"
+        source_path.write_bytes(b"source-audio")
+        return self.media_module.DownloadedMedia(source_path=source_path, title="Downloaded Title")
+
+    def detect_language(self, source_audio_path):
+        self.calls.append("detect_language")
+        return self.detected
+
+    def convert_to_mp3(self, source_audio_path, destination_path):
+        self.calls.append("convert_to_mp3")
+        Path(destination_path).write_bytes(b"mp3")
+        return Path(destination_path)
+
+    def transcribe(self, mp3_path, language_hint=None):
+        self.calls.append("transcribe")
+        return self.media_module.TranscriptionResult(
+            text="from whisper",
+            language="en",
+            segments=[{"start": 0.0, "end": 1.0, "text": "from whisper"}],
+        )
+
+
+def _run_subtitle_job(tmp_path, media, *, language_hint=None, prefer_subtitles=True):
+    pipeline_module = _load_module("whisper_transcriber.pipeline")
+    titles: list[str] = []
+    result = pipeline_module.run_job(
+        job_id="job-subs",
+        youtube_url="https://youtu.be/example",
+        artifacts_root=tmp_path / "artifacts",
+        media=media,
+        language_hint=language_hint,
+        title_callback=titles.append,
+        prefer_subtitles=prefer_subtitles,
+    )
+    return result, titles
+
+
+def test_run_job_uses_uploaded_subtitles_in_the_spoken_language(tmp_path):
+    media_module = _load_module("whisper_transcriber.media")
+    media = _SubtitleAwareMedia(media_module, language="en", subtitle_languages=("fr", "en"))
+
+    result, titles = _run_subtitle_job(tmp_path, media)
+
+    assert media.calls == ["probe", "fetch_subtitles en"]
+    assert titles == ["Probed Title"]
+    assert result.source == "subtitles"
+    assert result.language == "en"
+    assert result.display_title == "Probed Title"
+    assert (result.artifact_dir / "transcript.txt").read_text(encoding="utf-8") == "from subtitles"
+    assert (result.artifact_dir / "subtitles.srt").exists()
+    assert not (result.artifact_dir / "audio.mp3").exists()
+
+
+def test_run_job_ignores_translated_subtitles_and_reuses_the_probe(tmp_path):
+    media_module = _load_module("whisper_transcriber.media")
+    media = _SubtitleAwareMedia(media_module, language="en", subtitle_languages=("fr", "ja"))
+
+    result, _ = _run_subtitle_job(tmp_path, media)
+
+    assert media.calls == ["probe", "download_audio reused=True", "convert_to_mp3", "transcribe"]
+    assert result.source == "whisper"
+    assert result.display_title == "Probed Title"
+
+
+def test_run_job_detects_the_language_before_trusting_subtitles(tmp_path):
+    media_module = _load_module("whisper_transcriber.media")
+    media = _SubtitleAwareMedia(
+        media_module,
+        language=None,
+        subtitle_languages=("zh-Hans",),
+        detected="zh",
+    )
+
+    result, _ = _run_subtitle_job(tmp_path, media)
+
+    assert media.calls == [
+        "probe",
+        "download_audio reused=True",
+        "detect_language",
+        "fetch_subtitles zh-Hans",
+    ]
+    assert result.source == "subtitles"
+
+
+def test_run_job_does_not_detect_when_detection_cannot_pick_a_track(tmp_path):
+    media_module = _load_module("whisper_transcriber.media")
+    translated = _SubtitleAwareMedia(
+        media_module, language=None, subtitle_languages=("zh-Hans",), detected="en"
+    )
+    no_subtitles = _SubtitleAwareMedia(media_module, language=None, subtitle_languages=())
+
+    _run_subtitle_job(tmp_path / "translated", translated)
+    _run_subtitle_job(tmp_path / "none", no_subtitles)
+
+    assert translated.calls[-2:] == ["convert_to_mp3", "transcribe"]
+    assert "fetch_subtitles zh-Hans" not in translated.calls
+    assert "detect_language" not in no_subtitles.calls
+
+
+def test_run_job_falls_back_to_whisper_when_subtitles_fail(tmp_path):
+    media_module = _load_module("whisper_transcriber.media")
+    media = _SubtitleAwareMedia(
+        media_module,
+        language=None,
+        subtitle_languages=("en",),
+        fetch_error=RuntimeError("HTTP Error 429"),
+    )
+
+    result, _ = _run_subtitle_job(tmp_path, media, language_hint="en")
+
+    assert media.calls == [
+        "probe",
+        "fetch_subtitles en",
+        "download_audio reused=True",
+        "convert_to_mp3",
+        "transcribe",
+    ]
+    assert result.source == "whisper"
+
+
+def test_run_job_skips_subtitles_when_whisper_is_forced(tmp_path):
+    media_module = _load_module("whisper_transcriber.media")
+    media = _SubtitleAwareMedia(media_module, language="en", subtitle_languages=("en",))
+
+    result, titles = _run_subtitle_job(tmp_path, media, prefer_subtitles=False)
+
+    assert media.calls == ["download_audio reused=False", "convert_to_mp3", "transcribe"]
+    assert titles == ["Downloaded Title"]
+    assert result.source == "whisper"
