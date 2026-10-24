@@ -23,8 +23,12 @@ class JobArtifacts:
     segments_path: Path
 
 
+def job_artifact_dir(artifacts_root: str | Path, job_id: str) -> Path:
+    return Path(artifacts_root) / job_id
+
+
 def prepare_job_artifacts(artifacts_root: str | Path, job_id: str) -> JobArtifacts:
-    artifact_dir = Path(artifacts_root) / job_id
+    artifact_dir = job_artifact_dir(artifacts_root, job_id)
     artifact_dir.mkdir(parents=True, exist_ok=True)
     return JobArtifacts(
         artifact_dir=artifact_dir,

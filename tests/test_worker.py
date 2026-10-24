@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import os
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -625,3 +626,79 @@ def test_unexpected_worker_error_marks_job_failed_with_internal_error(tmp_path):
     assert refreshed.status == "failed"
     assert refreshed.last_error_code == "internal_error"
     assert refreshed.last_error_detail == "unexpected boom"
+
+
+def test_unwritable_job_log_fails_the_job_without_crashing_the_worker(tmp_path):
+    job_store_module = _load_module("whisper_transcriber.job_store")
+    worker_module = _load_module("whisper_transcriber.worker")
+
+    store = job_store_module.JobStore(tmp_path / "jobs.sqlite3")
+    created = store.create_job(youtube_url="https://youtu.be/no-disk")
+    # A regular file where the artifacts root should be makes every mkdir fail.
+    artifacts_root = tmp_path / "artifacts"
+    artifacts_root.write_text("not a directory", encoding="utf-8")
+
+    def run_job_needing_disk(*, job_id, artifacts_root, **kwargs):
+        (Path(artifacts_root) / job_id).mkdir(parents=True)
+
+    original_run_job = worker_module.run_job
+    worker_module.run_job = run_job_needing_disk
+    try:
+        processed = worker_module.process_one_job(
+            store=store,
+            worker_id="worker-1",
+            heartbeat_timeout_seconds=30,
+            artifacts_root=artifacts_root,
+        )
+    finally:
+        worker_module.run_job = original_run_job
+
+    refreshed = store.get_job(created.job_id)
+    assert processed is True
+    assert refreshed is not None
+    assert refreshed.status == "failed"
+    assert refreshed.artifact_dir is None
+
+
+def test_failed_job_still_prunes_old_artifacts(tmp_path):
+    config_module = _load_module("whisper_transcriber.config")
+    job_store_module = _load_module("whisper_transcriber.job_store")
+    worker_module = _load_module("whisper_transcriber.worker")
+
+    store = job_store_module.JobStore(tmp_path / "jobs.sqlite3")
+    store.create_job(youtube_url="https://youtu.be/boom")
+    artifacts_root = tmp_path / "artifacts"
+    an_hour_ago = time.time() - 3600
+    for name in ("old-1", "old-2"):
+        (artifacts_root / name).mkdir(parents=True)
+        os.utime(artifacts_root / name, (an_hour_ago, an_hour_ago))
+    settings = config_module.Settings(
+        artifacts_dir=artifacts_root,
+        db_path=tmp_path / "jobs.sqlite3",
+        max_queue_depth=5,
+        max_artifact_age_hours=168,
+        max_artifacts=1,
+        worker_poll_seconds=2,
+        heartbeat_seconds=5,
+    )
+
+    def broken_run_job(**kwargs):
+        raise ValueError("unexpected boom")
+
+    original_run_job = worker_module.run_job
+    worker_module.run_job = broken_run_job
+    try:
+        worker_module.process_one_job(
+            store=store,
+            worker_id="worker-1",
+            heartbeat_timeout_seconds=30,
+            artifacts_root=artifacts_root,
+            settings=settings,
+        )
+    finally:
+        worker_module.run_job = original_run_job
+
+    # Only the newest directory (the failed job's own log dir) survives.
+    remaining = [entry.name for entry in artifacts_root.iterdir()]
+    assert len(remaining) == 1
+    assert remaining[0] not in {"old-1", "old-2"}

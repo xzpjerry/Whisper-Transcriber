@@ -112,21 +112,31 @@
     renderArtifacts(payload.artifact_links);
   }
 
-  async function poll() {
-    const response = await fetch(statusUrl, {
-      cache: "no-store",
-      headers: { Accept: "application/json" },
-    });
-    if (!response.ok) return;
+  // Back off while the server is unreachable (e.g. restarting) instead of giving up.
+  const maxRetryDelay = 30000;
+  let retryDelay = pollInterval;
 
-    const payload = await response.json();
-    update(payload);
-    if (!isTerminal(payload.status)) {
-      window.setTimeout(poll, pollInterval);
+  async function poll() {
+    try {
+      const response = await fetch(statusUrl, {
+        cache: "no-store",
+        headers: { Accept: "application/json" },
+      });
+      if (response.status === 404) return;
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+      const payload = await response.json();
+      update(payload);
+      retryDelay = pollInterval;
+      if (!isTerminal(payload.status)) {
+        window.setTimeout(poll, pollInterval);
+      }
+    } catch (error) {
+      console.error(error);
+      window.setTimeout(poll, retryDelay);
+      retryDelay = Math.min(retryDelay * 2, maxRetryDelay);
     }
   }
 
-  poll().catch((error) => {
-    console.error(error);
-  });
+  poll();
 })();

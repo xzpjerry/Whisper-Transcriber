@@ -296,3 +296,28 @@ def test_failed_job_page_shows_error_detail_and_only_existing_artifacts(tmp_path
     assert "transcript.txt" not in html
     assert payload["last_error_detail"] == "ERROR: [youtube] broken: This video is unavailable"
     assert [link["kind"] for link in payload["artifact_links"]] == ["log"]
+
+
+def test_worker_lost_job_still_links_its_job_log(tmp_path, monkeypatch):
+    client, store, settings = _make_client(tmp_path, monkeypatch)
+    job = store.create_job(youtube_url="https://www.youtube.com/watch?v=crashy")
+    artifact_dir = settings.artifacts_dir / job.job_id
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    (artifact_dir / "job.log").write_text("Claimed job ...", encoding="utf-8")
+
+    # Stale-lease recovery fails the job without ever recording artifact_dir.
+    _set_job_fields(
+        store,
+        job.job_id,
+        status="failed",
+        progress_stage="failed",
+        last_error_code="worker_lost",
+        last_error_message="The worker stopped repeatedly while processing this job.",
+    )
+
+    payload = client.get(f"/api/jobs/{job.job_id}").json()
+
+    assert payload["artifact_dir"] is None
+    assert [link["href"] for link in payload["artifact_links"]] == [
+        f"/artifacts/{job.job_id}/job.log"
+    ]

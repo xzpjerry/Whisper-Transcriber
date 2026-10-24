@@ -14,7 +14,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from whisper_transcriber.artifacts import JOB_LOG_FILENAME, prune_artifacts
+from whisper_transcriber.artifacts import JOB_LOG_FILENAME, job_artifact_dir, prune_artifacts
 from whisper_transcriber.config import Settings, load_settings
 from whisper_transcriber.db import connect_db
 from whisper_transcriber.job_store import JobRecord, JobStore
@@ -130,11 +130,21 @@ def _api_job_url(job_id: str) -> str:
     return f"/api/jobs/{job_id}"
 
 
+def _job_dir(job: JobRecord) -> Path | None:
+    if job.artifact_dir:
+        return Path(job.artifact_dir)
+    # Jobs failed by stale-lease recovery never got artifact_dir recorded,
+    # but their job log still sits in the conventional directory.
+    if job.status == "failed":
+        return job_artifact_dir(_current_settings().artifacts_dir, job.job_id)
+    return None
+
+
 def _artifact_base(job: JobRecord) -> str | None:
-    if not job.artifact_dir:
+    artifact_dir = _job_dir(job)
+    if artifact_dir is None:
         return None
 
-    artifact_dir = Path(job.artifact_dir)
     settings = _current_settings()
     root = settings.artifacts_dir.resolve()
     try:
@@ -149,7 +159,7 @@ def _artifact_links(job: JobRecord) -> list[dict[str, Any]]:
     if base is None:
         return []
 
-    artifact_dir = Path(job.artifact_dir)
+    artifact_dir = _job_dir(job)
     links: list[dict[str, Any]] = []
     for kind, label, filename, copyable in ARTIFACT_FILENAMES:
         # Skip files a failed job never wrote or retention already removed.
@@ -167,10 +177,11 @@ def _artifact_links(job: JobRecord) -> list[dict[str, Any]]:
 
 
 def _job_preview(job: JobRecord) -> str | None:
-    if not job.artifact_dir:
+    artifact_dir = _job_dir(job)
+    if artifact_dir is None:
         return None
 
-    transcript_path = Path(job.artifact_dir) / "transcript.txt"
+    transcript_path = artifact_dir / "transcript.txt"
     if not transcript_path.exists():
         return None
     return transcript_path.read_text(encoding="utf-8")[:1000]

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Callable, Iterator
 
 from whisper_transcriber.config import Settings, load_settings
-from whisper_transcriber.artifacts import JOB_LOG_FILENAME, prune_artifacts
+from whisper_transcriber.artifacts import JOB_LOG_FILENAME, job_artifact_dir, prune_artifacts
 from whisper_transcriber.errors import PipelineError
 from whisper_transcriber.job_store import DEFAULT_MAX_JOB_ATTEMPTS, JobStore
 from whisper_transcriber.media import MediaPipeline
@@ -46,7 +46,7 @@ def process_one_job(
 
     job_id = claimed_job.job_id
     attempt = claimed_job.attempt_count
-    job_dir = Path(artifacts_root) / job_id
+    job_dir = job_artifact_dir(artifacts_root, job_id)
     interval = heartbeat_interval_seconds or heartbeat_timeout_seconds / 3
 
     with _job_log(job_dir):
@@ -99,24 +99,20 @@ def process_one_job(
                 detail=_error_detail(exc),
                 artifact_dir=str(job_dir) if job_dir.exists() else None,
             )
-            return True
+        else:
+            logger.info("Job %s completed in %.1fs", job_id, time.monotonic() - started)
+            if not store.mark_completed(
+                job_id,
+                worker_id=worker_id,
+                claim_attempt_count=attempt,
+                artifact_dir=str(result.artifact_dir),
+                display_title=result.display_title,
+            ):
+                logger.warning("Job %s finished after its lease was lost", job_id)
 
-        logger.info("Job %s completed in %.1fs", job_id, time.monotonic() - started)
-
-    if not store.mark_completed(
-        job_id,
-        worker_id=worker_id,
-        claim_attempt_count=attempt,
-        artifact_dir=str(result.artifact_dir),
-        display_title=result.display_title,
-    ):
-        logger.warning("Job %s finished after its lease was lost", job_id)
+    # Failed jobs leave directories too, so prune after every job.
     if settings is not None:
-        prune_artifacts(
-            artifacts_root=artifacts_root,
-            max_age_hours=settings.max_artifact_age_hours,
-            max_count=settings.max_artifacts,
-        )
+        _prune_artifacts(artifacts_root, settings)
     return True
 
 
@@ -154,6 +150,17 @@ def main(
             sleep_fn(resolved_settings.worker_poll_seconds)
     except KeyboardInterrupt:
         return 0
+
+
+def _prune_artifacts(artifacts_root: str | Path, settings: Settings) -> None:
+    try:
+        prune_artifacts(
+            artifacts_root=artifacts_root,
+            max_age_hours=settings.max_artifact_age_hours,
+            max_count=settings.max_artifacts,
+        )
+    except OSError:
+        logger.exception("Pruning old artifacts failed")
 
 
 class _LeaseKeeper:
@@ -210,9 +217,18 @@ class _LeaseKeeper:
 
 @contextmanager
 def _job_log(job_dir: Path) -> Iterator[None]:
-    """Mirror package log output into the job's own log file while it runs."""
-    job_dir.mkdir(parents=True, exist_ok=True)
-    handler = logging.FileHandler(job_dir / JOB_LOG_FILENAME, encoding="utf-8")
+    """Mirror package log output into the job's own log file while it runs.
+
+    A log file that cannot be opened must not take the worker down; the job
+    still runs and fails through the pipeline if the directory is unusable.
+    """
+    try:
+        job_dir.mkdir(parents=True, exist_ok=True)
+        handler = logging.FileHandler(job_dir / JOB_LOG_FILENAME, encoding="utf-8")
+    except OSError:
+        logger.exception("Could not open the job log in %s", job_dir)
+        yield
+        return
     handler.setFormatter(
         logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
     )
