@@ -22,6 +22,9 @@ MODEL_PATH = os.environ.get(
     os.path.expanduser("~/.lmstudio/models/mlx-community/whisper-large-v3-turbo"),
 )
 
+# JS runtimes yt-dlp may use, in order of preference
+JS_RUNTIMES = ("deno", "node", "bun", "quickjs")
+
 app = FastAPI(title="YouTube → MP3 → Whisper (MLX)")
 
 # simple static dir for artifacts
@@ -204,6 +207,16 @@ def _check_model_location() -> str:
         "or a Hugging Face repo id (for example: mlx-community/whisper-large-v3-turbo)."
     )
 
+def _check_js_runtime() -> str:
+    for name in JS_RUNTIMES:
+        path = shutil.which(name)
+        if path:
+            return path
+    raise RuntimeError(
+        "No JavaScript runtime found in PATH (needed by yt-dlp for YouTube). "
+        "Install one of: " + ", ".join(JS_RUNTIMES) + " (e.g. `brew install deno`)."
+    )
+
 def _check_artifacts_dir() -> str:
     os.makedirs(ARTIFACTS_DIR, exist_ok=True)
     probe_path = None
@@ -225,6 +238,7 @@ def _run_environment_checks():
     for key, checker in (
         ("ffmpeg", _check_ffmpeg_binary),
         ("model", _check_model_location),
+        ("js_runtime", _check_js_runtime),
         ("artifacts", _check_artifacts_dir),
     ):
         try:
@@ -292,6 +306,9 @@ def _download_best_audio(youtube_url: str, tmpdir: str) -> str:
         "no_warnings": True,
         "format": "bestaudio/best",
         "cookiesfrombrowser": ("chrome",),
+        # YouTube requires a JS runtime to solve its challenges; yt-dlp only
+        # enables deno by default, so allow whichever one is installed.
+        "js_runtimes": {name: {} for name in JS_RUNTIMES},
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(youtube_url, download=True)
